@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f172a">
   <title>Barcode Pocket Scanner</title>
-  <!-- Load all 3 fallback external library scripts -->
   <script src="https://unpkg.com/@zxing/browser@0.2.1"></script>
   <script src="https://unpkg.com/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -20,6 +19,7 @@
       --primary-dark: #1d4ed8;
       --danger: #dc2626;
       --success: #16a34a;
+      --warning: #d97706;
       --shadow: 0 10px 30px rgba(15, 23, 42, .08);
       --radius: 18px;
     }
@@ -73,8 +73,12 @@
     .value-cell { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; word-break:break-all; }
     .empty { padding:40px 20px; text-align:center; color:var(--muted); }
     .helper { margin-top:12px; color:var(--muted); font-size:.82rem; line-height:1.45; }
-    .toast { position:fixed; left:50%; bottom:20px; transform:translate(-50%, 20px); opacity:0; pointer-events:none; background:#0f172a; color:white; padding:11px 14px; border-radius:11px; box-shadow:var(--shadow); transition:.22s ease; z-index:20; max-width:90vw; text-align:center; }
+    
+    .toast { position:fixed; left:50%; bottom:20px; transform:translate(-50%, 20px); opacity:0; pointer-events:none; background:#0f172a; color:white; padding:12px 18px; border-radius:12px; box-shadow:var(--shadow); transition:.22s ease; z-index:20; max-width:90vw; text-align:center; font-weight: 600; }
     .toast.show { transform:translate(-50%, 0); opacity:1; }
+    .toast.success { background: var(--success); }
+    .toast.warning { background: var(--warning); }
+
     @media (max-width: 820px) {
       .grid { grid-template-columns:1fr; }
       header { flex-direction:column; }
@@ -87,9 +91,9 @@
     <header>
       <div>
         <h1>Barcode Pocket Scanner</h1>
-        <p class="subtitle">Quad-Engine Fallback Scanner (Native, Quagga2, ZXing, Html5Qrcode)</p>
+        <p class="subtitle">Quad-engine scanner that auto-pauses on successful capture.</p>
       </div>
-      <div class="badge">Ultra-Reliable</div>
+      <div class="badge">Auto-Pause</div>
     </header>
 
     <section class="grid">
@@ -111,7 +115,7 @@
             <div id="latestValue" class="result-value">—</div>
             <div id="latestMeta" class="result-meta">Center the barcode inside the frame.</div>
           </div>
-          <p class="helper">This application coordinates 4 parallel scanning mechanisms to ensure maximum recognition capability across different platforms.</p>
+          <p class="helper">The camera will automatically pause upon successfully capturing a new unique barcode.</p>
         </div>
       </section>
 
@@ -144,7 +148,7 @@
     (() => {
       'use strict';
 
-      const STORAGE_KEY = 'barcode-pocket-scanner:v4';
+      const STORAGE_KEY = 'barcode-pocket-scanner:v6';
       const video = document.getElementById('preview');
       const startBackBtn = document.getElementById('startBackBtn');
       const startFrontBtn = document.getElementById('startFrontBtn');
@@ -164,7 +168,6 @@
       let stream = null;
       let activeCleanups = [];
       let isStarting = false;
-      let lastAccepted = { value: '', time: 0 };
 
       function loadHistory() {
         try {
@@ -215,32 +218,42 @@
       }
 
       let toastTimer;
-      function showToast(message) {
+      function showToast(message, type = 'success') {
         clearTimeout(toastTimer);
         toast.textContent = message;
-        toast.classList.add('show');
-        toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+        toast.className = `toast show ${type}`;
+        toastTimer = setTimeout(() => toast.classList.remove('show'), 2500);
       }
 
-      function addScan(value, format = 'Unknown') {
+      function processScannedCode(value, format = 'Unknown') {
         if (!value) return;
 
-        const now = Date.now();
-        if (value === lastAccepted.value && (now - lastAccepted.time) < 1500) return;
-        lastAccepted = { value, time: now };
+        // Check if value already exists inside history
+        const isDuplicate = history.some(item => item.value === value);
 
+        if (isDuplicate) {
+          showToast(`Duplicate barcode detected: ${value}`, 'warning');
+          return; // Block entry but keep camera running
+        }
+
+        // Unique item detected
         const item = {
           id: (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`),
           value,
           format,
           scannedAt: new Date().toISOString()
         };
+
         history.unshift(item);
         saveHistory();
         renderHistory();
+
         latestValue.textContent = value;
         latestMeta.textContent = `${format} • ${formatDate(item.scannedAt)}`;
-        showToast('Barcode saved');
+        showToast(`Successfully scanned: ${value}`, 'success');
+
+        // Automatically pause/stop camera upon successful capture
+        stopScanner();
       }
 
       async function startScanner(facingMode = 'environment') {
@@ -284,16 +297,14 @@
                 try {
                   const codes = await detector.detect(video);
                   if (codes.length > 0) {
-                    addScan(codes[0].rawValue, codes[0].format || 'Native-Barcode');
+                    processScannedCode(codes[0].rawValue, codes[0].format || 'Native-Barcode');
                   }
                 } catch (e) {}
                 if (nativeActive) requestAnimationFrame(runNative);
               };
               runNative();
               activeCleanups.push(() => { nativeActive = false; });
-            } catch (e) {
-              console.warn('Native detector init skipped');
-            }
+            } catch (e) {}
           }
 
           // ENGINE 2: Quagga2 (Specialized 1D Engine)
@@ -314,32 +325,28 @@
                   Quagga.start();
                   Quagga.onDetected((result) => {
                     if (result?.codeResult?.code) {
-                      addScan(result.codeResult.code, result.codeResult.format || 'Quagga2-1D');
+                      processScannedCode(result.codeResult.code, result.codeResult.format || 'Quagga2-1D');
                     }
                   });
                   activeCleanups.push(() => { try { Quagga.stop(); } catch(e){} });
                 }
               });
-            } catch (e) {
-              console.warn('Quagga2 failed to start', e);
-            }
+            } catch (e) {}
           }
 
           // ENGINE 3: ZXing Browser Reader
           if (window.ZXingBrowser?.BrowserMultiFormatReader) {
             try {
               const zxingReader = new ZXingBrowser.BrowserMultiFormatReader();
-              const controls = await zxingReader.decodeFromConstraints(constraints, video, (result, error) => {
+              const controls = await zxingReader.decodeFromConstraints(constraints, video, (result) => {
                 if (result) {
                   let fmt = 'Unknown';
                   try { fmt = result.getBarcodeFormat().toString(); } catch(e){}
-                  addScan(result.getText(), fmt);
+                  processScannedCode(result.getText(), fmt);
                 }
               });
               activeCleanups.push(() => { try { controls.stop(); zxingReader.reset(); } catch(e){} });
-            } catch (e) {
-              console.warn('ZXing failed to start', e);
-            }
+            } catch (e) {}
           }
 
           // ENGINE 4: Html5Qrcode Canvas Scraper Fallback
@@ -350,16 +357,14 @@
                 { facingMode },
                 { fps: 10, qrbox: { width: 250, height: 250 } },
                 (decodedText, decodedResult) => {
-                  addScan(decodedText, decodedResult?.result?.format?.formatName || 'Html5Qrcode');
+                  processScannedCode(decodedText, decodedResult?.result?.format?.formatName || 'Html5Qrcode');
                 },
                 () => {}
               );
               activeCleanups.push(() => {
                 try { html5Qr.stop().catch(() => {}); } catch(e){}
               });
-            } catch (e) {
-              console.warn('Html5Qrcode fallback failed to start', e);
-            }
+            } catch (e) {}
           }
 
         } catch (err) {
@@ -368,16 +373,15 @@
           const message = err?.name === 'NotAllowedError'
             ? 'Camera permission was denied. Allow camera access and try again.'
             : err?.message || 'Could not start the camera.';
-          showToast(message);
+          showToast(message, 'warning');
         } finally {
           isStarting = false;
         }
       }
 
       function stopScanner() {
-        // Execute cleanup routines for all active engine loops
         activeCleanups.forEach(cleanup => {
-          try { cleanup(); } catch (e) { console.warn(e); }
+          try { cleanup(); } catch (e) {}
         });
         activeCleanups = [];
 
@@ -420,7 +424,7 @@
         latestValue.textContent = '—';
         latestMeta.textContent = 'Center the barcode inside the frame.';
         renderHistory();
-        showToast('Scan history cleared');
+        showToast('Scan history cleared', 'success');
       }
 
       startBackBtn.addEventListener('click', () => startScanner('environment'));
