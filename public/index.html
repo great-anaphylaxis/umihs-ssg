@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f172a">
   <title>Barcode Pocket Scanner</title>
+  <!-- Load all 3 fallback external library scripts -->
   <script src="https://unpkg.com/@zxing/browser@0.2.1"></script>
+  <script src="https://unpkg.com/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     :root {
       --bg: #f6f8fb;
@@ -36,7 +39,7 @@
     .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
     .card-body { padding:18px; }
     .scanner-shell { position:relative; aspect-ratio: 4/3; background:#0b1220; overflow:hidden; border-radius:14px; }
-    video { display:block; width:100%; height:100%; object-fit:cover; transform:scaleX(-1); background:#0b1220; }
+    video { display:block; width:100%; height:100%; object-fit:cover; background:#0b1220; }
     .scan-box { position:absolute; inset:15% 10%; border:2px solid rgba(255,255,255,.9); border-radius:18px; box-shadow:0 0 0 9999px rgba(0,0,0,.18); pointer-events:none; }
     .scan-line { position:absolute; left:8%; right:8%; top:50%; height:2px; background:#60a5fa; box-shadow:0 0 14px rgba(96,165,250,.9); animation:scan 2s ease-in-out infinite; }
     @keyframes scan { 0%,100% { transform:translateY(-55px); opacity:.5;} 50% { transform:translateY(55px); opacity:1;} }
@@ -53,6 +56,7 @@
     .primary { background:var(--primary); color:#fff; }
     .primary:hover:not(:disabled) { background:var(--primary-dark); }
     .secondary { background:#e8eef7; color:#0f172a; }
+    .danger { background:#fee2e2; color:#991b1b; }
     .result { margin-top:14px; padding:14px; background:#f8fafc; border:1px solid var(--line); border-radius:14px; }
     .result-label { font-size:.76rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:800; }
     .result-value { margin-top:5px; font-size:1.05rem; font-weight:750; word-break:break-word; }
@@ -83,9 +87,9 @@
     <header>
       <div>
         <h1>Barcode Pocket Scanner</h1>
-        <p class="subtitle">Scan barcodes with your phone camera, keep a timestamped history on this device, and export your scans as JSON.</p>
+        <p class="subtitle">Quad-Engine Fallback Scanner (Native, Quagga2, ZXing, Html5Qrcode)</p>
       </div>
-      <div class="badge">Local-first</div>
+      <div class="badge">Ultra-Reliable</div>
     </header>
 
     <section class="grid">
@@ -98,15 +102,16 @@
           </div>
           <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">Scanner stopped</span></div>
           <div class="controls">
-            <button id="startBtn" class="primary">Start front camera</button>
+            <button id="startBackBtn" class="primary">Back camera</button>
+            <button id="startFrontBtn" class="secondary">Front camera</button>
             <button id="stopBtn" class="secondary" disabled>Stop</button>
           </div>
           <div class="result" aria-live="polite">
             <div class="result-label">Latest scan</div>
             <div id="latestValue" class="result-value">—</div>
-            <div id="latestMeta" class="result-meta">Point a barcode inside the frame.</div>
+            <div id="latestMeta" class="result-meta">Center the barcode inside the frame.</div>
           </div>
-          <p class="helper">Camera access requires a secure context such as HTTPS or localhost. The app uses ZXing to decode the camera video; it does not use the native Barcode Detection API.</p>
+          <p class="helper">This application coordinates 4 parallel scanning mechanisms to ensure maximum recognition capability across different platforms.</p>
         </div>
       </section>
 
@@ -117,6 +122,7 @@
           </div>
           <div class="table-actions">
             <button id="downloadBtn" class="secondary" disabled>Download JSON</button>
+            <button id="clearBtn" class="danger" disabled>Clear</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -138,9 +144,10 @@
     (() => {
       'use strict';
 
-      const STORAGE_KEY = 'barcode-pocket-scanner:v1';
+      const STORAGE_KEY = 'barcode-pocket-scanner:v4';
       const video = document.getElementById('preview');
-      const startBtn = document.getElementById('startBtn');
+      const startBackBtn = document.getElementById('startBackBtn');
+      const startFrontBtn = document.getElementById('startFrontBtn');
       const stopBtn = document.getElementById('stopBtn');
       const downloadBtn = document.getElementById('downloadBtn');
       const clearBtn = document.getElementById('clearBtn');
@@ -154,9 +161,8 @@
       const toast = document.getElementById('toast');
 
       let history = loadHistory();
-      let codeReader = null;
-      let controls = null;
       let stream = null;
+      let activeCleanups = [];
       let isStarting = false;
       let lastAccepted = { value: '', time: 0 };
 
@@ -216,16 +222,7 @@
         toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
       }
 
-      function describeFormat(result) {
-        try {
-          return result?.getBarcodeFormat()?.toString?.() || 'Unknown';
-        } catch {
-          return 'Unknown';
-        }
-      }
-
-      function addScan(result) {
-        const value = result?.getText?.() || '';
+      function addScan(value, format = 'Unknown') {
         if (!value) return;
 
         const now = Date.now();
@@ -235,56 +232,139 @@
         const item = {
           id: (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`),
           value,
-          format: describeFormat(result),
+          format,
           scannedAt: new Date().toISOString()
         };
         history.unshift(item);
         saveHistory();
         renderHistory();
         latestValue.textContent = value;
-        latestMeta.textContent = `${item.format} • ${formatDate(item.scannedAt)}`;
+        latestMeta.textContent = `${format} • ${formatDate(item.scannedAt)}`;
         showToast('Barcode saved');
       }
 
-      async function startScanner() {
-        if (isStarting || controls) return;
+      async function startScanner(facingMode = 'environment') {
+        if (isStarting || stream) return;
         isStarting = true;
-        startBtn.disabled = true;
+        startBackBtn.disabled = true;
+        startFrontBtn.disabled = true;
         setStatus('Requesting camera…');
 
         try {
-          if (!window.ZXingBrowser?.BrowserMultiFormatReader) {
-            throw new Error('ZXing failed to load. Check your internet connection and reload the page.');
-          }
-
-          codeReader = new ZXingBrowser.BrowserMultiFormatReader();
-
           const constraints = {
             video: {
-              facingMode: { ideal: 'user' },
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
+              facingMode: { ideal: facingMode },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 }
             },
             audio: false
           };
 
-          controls = await codeReader.decodeFromConstraints(constraints, video, (result, error) => {
-            if (result) addScan(result);
-            // Decode misses are normal while the camera is running; only show them if the stream died.
-            if (error && !stream && error.name !== 'NotFoundException') return;
-          });
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          video.srcObject = stream;
+          video.style.transform = facingMode === 'user' ? 'scaleX(-1)' : 'none';
+          await video.play();
 
-          stream = video.srcObject || null;
-          setStatus('Scanning with front camera', true);
+          setStatus(`Scanning active (${facingMode === 'environment' ? 'Back' : 'Front'})`, true);
           stopBtn.disabled = false;
+
+          // ----------------------------------------------------
+          // MULTI-ENGINE FALLBACK LAYER
+          // ----------------------------------------------------
+
+          // ENGINE 1: Native BarcodeDetector API
+          if ('BarcodeDetector' in window) {
+            try {
+              const formats = await BarcodeDetector.getSupportedFormats();
+              const detector = new BarcodeDetector({ formats });
+              let nativeActive = true;
+
+              const runNative = async () => {
+                if (!nativeActive || !stream) return;
+                try {
+                  const codes = await detector.detect(video);
+                  if (codes.length > 0) {
+                    addScan(codes[0].rawValue, codes[0].format || 'Native-Barcode');
+                  }
+                } catch (e) {}
+                if (nativeActive) requestAnimationFrame(runNative);
+              };
+              runNative();
+              activeCleanups.push(() => { nativeActive = false; });
+            } catch (e) {
+              console.warn('Native detector init skipped');
+            }
+          }
+
+          // ENGINE 2: Quagga2 (Specialized 1D Engine)
+          if (window.Quagga) {
+            try {
+              Quagga.init({
+                inputStream: {
+                  type: LiveStream,
+                  target: video,
+                  constraints: { facingMode }
+                },
+                decoder: {
+                  readers: ['code_128_reader', 'ean_reader', 'ean_8_reader', 'upc_reader', 'code_39_reader']
+                },
+                locate: true
+              }, (err) => {
+                if (!err) {
+                  Quagga.start();
+                  Quagga.onDetected((result) => {
+                    if (result?.codeResult?.code) {
+                      addScan(result.codeResult.code, result.codeResult.format || 'Quagga2-1D');
+                    }
+                  });
+                  activeCleanups.push(() => { try { Quagga.stop(); } catch(e){} });
+                }
+              });
+            } catch (e) {
+              console.warn('Quagga2 failed to start', e);
+            }
+          }
+
+          // ENGINE 3: ZXing Browser Reader
+          if (window.ZXingBrowser?.BrowserMultiFormatReader) {
+            try {
+              const zxingReader = new ZXingBrowser.BrowserMultiFormatReader();
+              const controls = await zxingReader.decodeFromConstraints(constraints, video, (result, error) => {
+                if (result) {
+                  let fmt = 'Unknown';
+                  try { fmt = result.getBarcodeFormat().toString(); } catch(e){}
+                  addScan(result.getText(), fmt);
+                }
+              });
+              activeCleanups.push(() => { try { controls.stop(); zxingReader.reset(); } catch(e){} });
+            } catch (e) {
+              console.warn('ZXing failed to start', e);
+            }
+          }
+
+          // ENGINE 4: Html5Qrcode Canvas Scraper Fallback
+          if (window.Html5Qrcode) {
+            try {
+              const html5Qr = new Html5Qrcode('preview', { verbose: false });
+              await html5Qr.start(
+                { facingMode },
+                { fps: 10, qrbox: { width: 250, height: 250 } },
+                (decodedText, decodedResult) => {
+                  addScan(decodedText, decodedResult?.result?.format?.formatName || 'Html5Qrcode');
+                },
+                () => {}
+              );
+              activeCleanups.push(() => {
+                try { html5Qr.stop().catch(() => {}); } catch(e){}
+              });
+            } catch (e) {
+              console.warn('Html5Qrcode fallback failed to start', e);
+            }
+          }
+
         } catch (err) {
           console.error(err);
-          controls = null;
-          codeReader = null;
-          setStatus('Scanner stopped');
-          startBtn.disabled = false;
-          stopBtn.disabled = true;
-
+          stopScanner();
           const message = err?.name === 'NotAllowedError'
             ? 'Camera permission was denied. Allow camera access and try again.'
             : err?.message || 'Could not start the camera.';
@@ -295,16 +375,22 @@
       }
 
       function stopScanner() {
-        try { controls?.stop?.(); } catch (err) { console.warn(err); }
-        controls = null;
-        try { codeReader?.reset?.(); } catch (err) { console.warn(err); }
-        codeReader = null;
+        // Execute cleanup routines for all active engine loops
+        activeCleanups.forEach(cleanup => {
+          try { cleanup(); } catch (e) { console.warn(e); }
+        });
+        activeCleanups = [];
+
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          stream = null;
+        }
         if (video.srcObject) {
-          video.srcObject.getTracks().forEach(track => track.stop());
           video.srcObject = null;
         }
-        stream = null;
-        startBtn.disabled = false;
+
+        startBackBtn.disabled = false;
+        startFrontBtn.disabled = false;
         stopBtn.disabled = true;
         setStatus('Scanner stopped');
       }
@@ -332,14 +418,16 @@
         history = [];
         saveHistory();
         latestValue.textContent = '—';
-        latestMeta.textContent = 'Point a barcode inside the frame.';
+        latestMeta.textContent = 'Center the barcode inside the frame.';
         renderHistory();
         showToast('Scan history cleared');
       }
 
-      startBtn.addEventListener('click', startScanner);
+      startBackBtn.addEventListener('click', () => startScanner('environment'));
+      startFrontBtn.addEventListener('click', () => startScanner('user'));
       stopBtn.addEventListener('click', stopScanner);
       downloadBtn.addEventListener('click', downloadJson);
+      clearBtn.addEventListener('click', clearHistory);
 
       window.addEventListener('pagehide', stopScanner);
       renderHistory();
