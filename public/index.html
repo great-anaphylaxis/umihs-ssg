@@ -53,7 +53,6 @@
     .primary { background:var(--primary); color:#fff; }
     .primary:hover:not(:disabled) { background:var(--primary-dark); }
     .secondary { background:#e8eef7; color:#0f172a; }
-    .danger { background:#fee2e2; color:#991b1b; }
     .result { margin-top:14px; padding:14px; background:#f8fafc; border:1px solid var(--line); border-radius:14px; }
     .result-label { font-size:.76rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:800; }
     .result-value { margin-top:5px; font-size:1.05rem; font-weight:750; word-break:break-word; }
@@ -118,7 +117,6 @@
           </div>
           <div class="table-actions">
             <button id="downloadBtn" class="secondary" disabled>Download JSON</button>
-            <button id="clearBtn" class="danger" disabled>Clear</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -342,7 +340,6 @@
       startBtn.addEventListener('click', startScanner);
       stopBtn.addEventListener('click', stopScanner);
       downloadBtn.addEventListener('click', downloadJson);
-      clearBtn.addEventListener('click', clearHistory);
 
       window.addEventListener('pagehide', stopScanner);
       renderHistory();
